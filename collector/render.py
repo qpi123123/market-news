@@ -276,7 +276,7 @@ def render_info(statuses: list[SourceStatus], n_articles: int, n_ai: int, storie
     return (
         f'<details class="info"><summary>수집 정보 · {md(now)} {now:%H:%M} · 지난 {window_hours}시간 · 기사 {n_articles:,}건 '
         f'(AI 작성 {n_ai}건 제외) → 사건 {len(stories):,}개, 그중 주식 관련 {n_rel:,}개 · 언론사 {n_outlets}곳 · {health}</summary>'
-        f'<p>주식 관련: AI 판별(GitHub Models)이 되면 그 결과, 안 되면 키워드 규칙(시장 검색어·종목·테마·시장 키워드·언론사 5곳 이상). '
+        f'<p>주식 관련: AI 판별(Groq)이 된 기사는 그 결과, 안 된 기사는 키워드 규칙(시장 검색어·종목·테마·시장 키워드·언론사 5곳 이상). '
         f'★ = 주식 관련 중 중요도 상위 {STAR_N}건. 해외 = 여러 언론사 보도 + 분쟁·테러·정치·외교·경제 키워드 + AI 중요도 상위 {config.WORLD_TOP_N}건. '
         f'시각 = 첫 보도 시각(KST). AI는 분류만 하고 기사·요약은 쓰지 않음.</p>'
         f'<table><thead><tr><th></th><th>소스</th><th>건수</th><th>비고</th></tr></thead><tbody>{rows}</tbody></table>'
@@ -357,7 +357,7 @@ def render_page(stories: list[Story], quotes: list[Quote], statuses: list[Source
   </div>
 </div>
 
-<div class="wrap">
+<div class="wrap open">
   <main>
     <div id="list">{rows}</div>
     <div id="world" hidden>
@@ -368,8 +368,8 @@ def render_page(stories: list[Story], quotes: list[Quote], statuses: list[Source
     <p class="empty" id="empty" hidden>조건에 맞는 뉴스 없음</p>
     {render_info(statuses, n_articles, n_ai, stories, now, window_hours)}
   </main>
-  <aside id="panel" hidden>
-    <button id="close" class="close" type="button" title="닫기 (Esc)">✕</button>
+  <aside id="panel">
+    <button id="close" class="close" type="button" title="선택 해제 (Esc)" hidden>✕</button>
     <div id="pbody"></div>
   </aside>
 </div>
@@ -448,7 +448,7 @@ button,input,select{font:inherit;color:inherit;letter-spacing:inherit}
 
 /* 목록 */
 .wrap{display:grid;grid-template-columns:minmax(0,1fr)}
-.wrap.open{grid-template-columns:minmax(0,1fr) min(44vw,660px)}
+.wrap.open{grid-template-columns:minmax(0,1fr) min(42vw,640px)}
 main{min-width:0}
 .div{position:sticky;top:var(--bar-h,92px);z-index:2;background:var(--soft);padding:7px 20px;
   font-size:12px;font-weight:700;color:var(--sub);border-bottom:1px solid var(--line)}
@@ -530,6 +530,11 @@ main{min-width:0}
 /* 오른쪽 패널 */
 #panel{position:sticky;top:var(--bar-h,92px);height:calc(100vh - var(--bar-h,92px));overflow-y:auto;
   border-left:1px solid var(--line);background:var(--bg);padding:28px 30px 36px;box-shadow:-12px 0 32px rgba(0,27,55,.04)}
+.p-empty{height:100%;min-height:50vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;color:var(--faint)}
+.p-empty-ic{font-size:34px;opacity:.5;margin-bottom:10px}
+.p-empty p{margin:0 0 6px;font-size:14px;color:var(--sub)}
+.p-empty small{font-size:12px}
 .close{position:absolute;right:14px;top:12px;border:0;background:var(--soft2);border-radius:8px;width:30px;height:30px;
   font-size:13px;color:var(--sub);cursor:pointer}
 .close:hover{background:var(--line)}
@@ -585,7 +590,8 @@ main{min-width:0}
   .ctl input{flex:1 1 100%}
   .updated{display:none}
   .wrap.open{grid-template-columns:minmax(0,1fr)}
-  #panel{position:fixed;inset:0;z-index:20;height:100vh;border:0;padding:52px 20px 32px}
+  #panel{position:fixed;inset:0;z-index:20;height:100vh;border:0;padding:52px 20px 32px;display:none}
+  body.panel-on #panel{display:block}
   .row{grid-template-columns:38px minmax(0,1fr) auto;padding:0 12px}
   .st,.sk{display:none}
   .top .ti::before{content:"★ ";color:var(--star)}
@@ -731,11 +737,21 @@ JS = r"""
     parts.push(src);
 
     pbody.replaceChildren(...parts);
-    panel.hidden = false; wrap.classList.add('open'); panel.scrollTop = 0;
+    $('close').hidden = false; panel.scrollTop = 0;
+    document.body.classList.add('panel-on');   // 모바일: 전체 화면으로 열림
+  }
+  function emptyPanel() {
+    const box = el('div', { class: 'p-empty' });
+    box.append(el('div', { class: 'p-empty-ic' }, '📰'),
+               el('p', {}, '왼쪽에서 기사를 선택하면 여기에 내용이 표시됨'),
+               el('small', {}, '↑ ↓ 키로 기사 이동 · Esc 선택 해제'));
+    pbody.replaceChildren(box);
   }
   function closePanel() {
-    panel.hidden = true; wrap.classList.remove('open');
     selected?.classList.remove('sel'); selected = null;
+    $('close').hidden = true;
+    document.body.classList.remove('panel-on');
+    emptyPanel();
   }
   document.querySelector('main').addEventListener('click', e => {
     const it = e.target.closest('.row,.wcard'); if (it) openPanel(it);
@@ -762,6 +778,7 @@ JS = r"""
   function render() {
     const words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const isWorld = scope === 'world', isFlow = scope === 'flow';
+    wrap.classList.toggle('open', !isFlow); panel.hidden = isFlow;
     list.hidden = isWorld || isFlow; worldBox.hidden = !isWorld; $('flow').hidden = !isFlow;
     $('chiprow').hidden = isWorld || isFlow;
     theme.disabled = isWorld || isFlow; sort.disabled = isWorld || isFlow; q.disabled = isFlow;
@@ -823,6 +840,7 @@ JS = r"""
   window.addEventListener('resize', setBarH);
   setMarket(load('mn_market', false));
   applyWatch();
+  emptyPanel();
   render();
 })();
 """

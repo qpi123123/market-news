@@ -1,13 +1,14 @@
 """실행: python collector/main.py
 
 순서: 수집 → 정리(AI 작성 기사 제외·같은 사건 묶기·종목/테마 태그·점수)
-      → AI 판별(GitHub Actions에서만) → 패널 요약 보강 → 페이지 생성
+      → AI 판별(Groq, 키가 있을 때) → 패널 요약 보강 → 보관 → 페이지 생성
 
 결과
 - docs/index.html    : 페이지 (GitHub Pages가 이 폴더를 서비스)
 - data/history.json  : 사건별 첫 보도 시각 기록 ('N일 전 재료' 판단)
 - data/stocks.json   : 상장 종목 목록 캐시 (7일마다 갱신)
 - data/themes.json   : 날짜별 테마 건수 (테마 흐름)
+- data/ai_cache.json : AI 판별 결과 저장 (14일, 같은 사건은 다시 보내지 않음)
 - data/archive/      : 날짜별 상위 뉴스 기록 → docs/archive/*.html
 """
 
@@ -52,7 +53,7 @@ def main() -> None:
 
     stories, n_ai = process(articles, ROOT / "data" / "history.json", now, StockMatcher(stock_list))
     ids = {id(s): story_id(s) for s in stories}
-    statuses.append(classify(stories, ids))
+    statuses.append(classify(stories, ids, ROOT / "data" / "ai_cache.json"))
     statuses.append(fill_leads(stories))
 
     # 날짜별 보관 (작은 JSON만 저장소에 남김) → 지난 날짜 페이지 생성
