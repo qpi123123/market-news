@@ -40,8 +40,15 @@ def _call(token: str, model: str, batch: list[tuple[str, str]]) -> dict[str, dic
     }).encode()
     raw = http_get(ENDPOINT, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
                                       "Accept": "application/json"}, data=body, timeout=60, retries=1)
-    content = json.loads(raw)["choices"][0]["message"]["content"]
-    items = json.loads(content).get("items", [])
+    try:
+        content = json.loads(raw)["choices"][0]["message"]["content"] or ""
+    except Exception:
+        raise ValueError(f"응답 형식 이상: {raw[:150]!r}")
+    # 코드블록(```json ... ```) 등으로 감싸 오는 경우 대비: 가장 바깥 { ... }만 사용
+    start, end = content.find("{"), content.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError(f"JSON 없음: {content[:150]!r}")
+    items = json.loads(content[start:end + 1]).get("items", [])
     out = {}
     for it in items:
         sid = str(it.get("id", ""))
@@ -71,10 +78,11 @@ def classify(stories: list[Story], ids: dict[int, str]) -> SourceStatus:
         try:
             results = _call(token, config.AI_MODEL, batch)
         except urllib.error.HTTPError as e:
-            error = f"HTTP {e.code}" + (" 한도 초과" if e.code == 429 else "") + f" — {i}건 이후 키워드 규칙 사용"
+            detail = e.read()[:150].decode("utf-8", "replace") if e.fp else ""
+            error = f"HTTP {e.code}" + (" 한도 초과" if e.code == 429 else "") + f" {detail} — {i}건 이후 키워드 규칙 사용"
             break
         except Exception as e:
-            error = f"{str(e)[:60]} — {i}건 이후 키워드 규칙 사용"
+            error = f"{str(e)[:200]} — {i}건 이후 키워드 규칙 사용"
             break
         for sid, r in results.items():
             s = by_sid.get(sid)
