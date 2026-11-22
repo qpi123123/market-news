@@ -26,10 +26,20 @@ RSS_FEEDS = [
     ("아시아경제", "증권", "https://www.asiae.co.kr/rss/stock.htm"),
     ("헤럴드경제", "경제", "https://biz.heraldcorp.com/rss/google/economy"),
     ("머니투데이", "전체", "https://rss.mt.co.kr/mt_news.xml"),  # EUC-KR (자동 처리)
+    # ---- 해외 (world=True로 표시되는 소스는 아래 WORLD_FEEDS) ----
     ("CNBC", "Top News", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
     ("CNBC", "Markets", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"),
     ("CNBC", "Finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"),
 ]
+
+# 해외 뉴스 칸 소스 (한국어 위주). 여기서 온 기사는 '해외'로 분류
+WORLD_FEEDS = [
+    ("연합뉴스", "국제", "https://www.yna.co.kr/rss/international.xml"),
+    ("BBC 코리아", "전체", "https://feeds.bbci.co.uk/korean/rss.xml"),
+    ("한국경제", "국제", "https://www.hankyung.com/feed/international"),
+    ("뉴시스", "국제", "https://www.newsis.com/RSS/international.xml"),
+]
+WORLD_TOP_N = 20   # 해외 칸에 보여줄 개수
 
 # ---------------------------------------------------------------------------
 # 2) 검색어 — 구글 뉴스 검색(주력, 무료)과 네이버 API(선택)가 같이 사용
@@ -97,8 +107,14 @@ OUTLETS = {
     "news.kbs.co.kr": "KBS", "imbc.com": "MBC", "news.sbs.co.kr": "SBS", "bizwatch.co.kr": "비즈니스워치",
     "seoul.co.kr": "서울신문", "kmib.co.kr": "국민일보",
     "munhwa.com": "문화일보", "segye.com": "세계일보", "businesspost.co.kr": "비즈니스포스트",
-    "korea.kr": "정책브리핑", "bok.or.kr": "한국은행",
+    "korea.kr": "정책브리핑", "bok.or.kr": "한국은행", "bbc.com": "BBC 코리아",
 }
+
+# ---------------------------------------------------------------------------
+# AI 판별 (GitHub Models 무료 사용량, GitHub Actions에서만 동작)
+# ---------------------------------------------------------------------------
+AI_ENABLED = True
+AI_MODEL = "openai/gpt-4.1-mini"
 
 # AI·로봇이 자동 작성한 기사 제외. 제목·첫 문장·기자명에 아래 표현이 있으면 버림.
 # 새 유형이 보이면 여기에 추가. (2026-11 확인: 매일경제 'MK시그널' 등 'AI 기자' 시리즈)

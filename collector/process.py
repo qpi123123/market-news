@@ -32,6 +32,25 @@ class Story:
     themes: list[str] = field(default_factory=list)
     score: float = 0.0
     stock_related: bool = False  # 주식 관련 판별 결과
+    stocks: list[tuple[str, str, str]] = field(default_factory=list)  # (종목명, 종목코드, 업종)
+    ai: dict | None = None       # AI 판별 결과 {"rel", "sector", "dir", "imp", "wcat"}
+    world_cats: list[str] = field(default_factory=list)  # 해외 뉴스 분류
+    world_score: float = 0.0
+
+    @property
+    def sectors(self) -> list[str]:
+        """영향 섹터: AI 판별 업종 → 테마 키워드 → 거론 종목의 거래소 업종 순."""
+        out = []
+        if self.ai and self.ai.get("sector"):
+            out.append(self.ai["sector"])
+        out += self.themes
+        out += [ind for _, _, ind in self.stocks if ind]
+        return list(dict.fromkeys(out))[:3]
+
+    @property
+    def is_world(self) -> bool:
+        """해외 소스 기사가 절반 이상이면 해외 뉴스."""
+        return sum(a.world for a in self.articles) * 2 >= len(self.articles)
     days_old: int = 0   # 첫 보도 후 지난 일수 (실행 기록 기준)
 
     @property
@@ -153,14 +172,17 @@ def apply_history(stories: list[Story], path: Path, now: datetime) -> None:
     path.write_text(json.dumps(records, ensure_ascii=False, indent=0), encoding="utf-8")
 
 
-def tag_and_score(s: Story, now: datetime) -> None:
+def tag_and_score(s: Story, now: datetime, matcher=None) -> None:
     text = " ".join(f"{a.title} {a.summary}" for a in s.articles[:5])
+    if matcher:
+        s.stocks = matcher.find(" ".join(a.title for a in s.articles[:5]))[:6]
     s.categories = [key for key, (_, words) in kw.CATEGORIES.items() if kw.find(text, words)] or ["issue"]
     s.themes = [name for name, words in kw.THEMES.items() if kw.find(text, words)]
 
     # 주식 관련 판별: 시장 검색어로 찾음 / 테마 키워드 / 시장 분야 키워드 / 언론사 다수가 다룬 큰 이슈
     s.stock_related = (
         any(a.targeted for a in s.articles)
+        or bool(s.stocks)
         or bool(s.themes)
         or any(c != "issue" for c in s.categories)
         or len(s.outlets) >= BIG_ISSUE_OUTLETS
@@ -174,13 +196,26 @@ def tag_and_score(s: Story, now: datetime) -> None:
         + 2.0 * len(kw.find(title_text, kw.INDEX_MOVERS))         # 지수 영향 단어
         + 2.0 * bool(kw.find(title_text, kw.SURGE_WORDS))         # 급등락
         + 0.5 * len(s.themes)
+        + 1.0 * min(len(s.stocks), 2)                           # 종목이 거론됨
         + 2.0 * any(a.targeted for a in s.articles)              # 시장 검색어로 찾은 사건
         + max(0.0, 6.0 - hours_since / 4)                         # 최신일수록 가산
         - (4.0 if s.days_old >= OLD_NEWS_DAYS else 0.0)           # 오래된 재료 감점
     )
 
 
-def process(articles: list[Article], history_path: Path, now: datetime) -> tuple[list[Story], int]:
+def score_world(s: Story, now: datetime) -> None:
+    title_text = " ".join(a.title for a in s.articles[:5])
+    s.world_cats = [c for c, words in kw.WORLD_CATS.items() if kw.find(title_text, words)]
+    hours_since = (now - s.latest_published).total_seconds() / 3600
+    s.world_score = (
+        3.0 * min(len(s.outlets), 8)                  # 여러 매체가 다룬 사건
+        + 2.0 * len(s.world_cats)                     # 분쟁·테러·정치·외교·경제 키워드
+        + max(0.0, 6.0 - hours_since / 4)
+        - (4.0 if s.days_old >= OLD_NEWS_DAYS else 0.0)
+    )
+
+
+def process(articles: list[Article], history_path: Path, now: datetime, matcher=None) -> tuple[list[Story], int]:
     """반환: (중요도순 사건 목록, 제외한 AI 작성 기사 수)"""
     # 국내 주요 뉴스는 분야와 상관없이 전부 남김 (AI 작성 기사만 제외).
     # 시장 영향은 거르지 않고 중요도 점수·★로 표시.
@@ -188,5 +223,7 @@ def process(articles: list[Article], history_path: Path, now: datetime) -> tuple
     stories = group_stories([a for a in articles if not is_ai_written(a)])
     apply_history(stories, history_path, now)
     for s in stories:
-        tag_and_score(s, now)
+        tag_and_score(s, now, matcher)
+        if s.is_world:
+            score_world(s, now)
     return sorted(stories, key=lambda s: s.score, reverse=True), len(ai_written)

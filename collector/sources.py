@@ -32,7 +32,8 @@ class Article:
     via: str          # "구글", "RSS", "네이버"
     author: str = ""
     lead: str = ""    # 기사 앞부분 몇 문장 (패널 표시용)
-    targeted: bool = False  # 시장 관련 검색어로 찾은 기사 (키워드 필터 생략)
+    targeted: bool = False  # 시장 관련 검색어로 찾은 기사
+    world: bool = False     # 해외 뉴스 소스에서 온 기사
 
 
 @dataclass
@@ -59,9 +60,10 @@ class Quote:
 # ---------------------------------------------------------------------------
 # 공통
 # ---------------------------------------------------------------------------
-def http_get(url: str, headers: dict | None = None, timeout: int = 15, retries: int = 3) -> bytes:
-    """GET. 429(요청 과다)·503(일시 차단)이면 점점 길게 쉬었다가 재시도."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
+def http_get(url: str, headers: dict | None = None, timeout: int = 15, retries: int = 3,
+             data: bytes | None = None) -> bytes:
+    """GET (data가 있으면 POST). 429(요청 과다)·503(일시 차단)이면 점점 길게 쉬었다가 재시도."""
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT, **(headers or {})})
     for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -147,8 +149,8 @@ def _tag(block: str, *names: str) -> str:
     return ""
 
 
-def fetch_rss(outlet: str, section: str, url: str, since: datetime) -> tuple[list[Article], SourceStatus]:
-    name = f"{outlet} {section} (RSS)"
+def fetch_rss(outlet: str, section: str, url: str, since: datetime, world: bool = False) -> tuple[list[Article], SourceStatus]:
+    name = f"{outlet} {section} (RSS{', 해외' if world else ''})"
     try:
         text = decode(http_get(url))
         if "<item" not in text:
@@ -165,7 +167,7 @@ def fetch_rss(outlet: str, section: str, url: str, since: datetime) -> tuple[lis
                 title=title,
                 summary=first_sentence(description), lead=lead_text(description),
                 url=link, outlet=outlet, published=published, via="RSS",
-                author=clean_text(_tag(block, "author", "dc:creator")),
+                author=clean_text(_tag(block, "author", "dc:creator")), world=world,
             ))
         return articles, SourceStatus(name, True, len(articles))
     except Exception as e:  # 소스 하나가 실패해도 전체는 계속
@@ -216,7 +218,7 @@ def run_queries(label: str, fetch_one, workers: int) -> tuple[list[Article], Sou
 # ---------------------------------------------------------------------------
 # 구글 뉴스 RSS 검색 (주력, 키 불필요)
 # ---------------------------------------------------------------------------
-def parse_google_rss(text: str, since: datetime, targeted: bool) -> list[Article]:
+def parse_google_rss(text: str, since: datetime, targeted: bool, world: bool = False) -> list[Article]:
     articles = []
     for block in re.findall(r"<item>.*?</item>", text, flags=re.S):
         published = parse_date(_tag(block, "pubDate"))
@@ -233,7 +235,7 @@ def parse_google_rss(text: str, since: datetime, targeted: bool) -> list[Article
         articles.append(Article(
             title=title, summary="",  # 구글 RSS에는 본문이 없음 (같은 사건의 언론사 RSS 기사에서 채워짐)
             url=clean_text(_tag(block, "link")), outlet=outlet, published=published, via="구글",
-            targeted=targeted,
+            targeted=targeted, world=world,
         ))
     return articles
 
@@ -247,7 +249,7 @@ def fetch_google_query(query: str, since: datetime) -> list[Article]:
 def fetch_google_topic(name: str, url: str, since: datetime) -> tuple[list[Article], SourceStatus]:
     label = f"구글 뉴스 {name}"
     try:
-        found = parse_google_rss(decode(http_get(url)), since, targeted=False)
+        found = parse_google_rss(decode(http_get(url)), since, targeted=False, world=(name == "세계"))
         return found, SourceStatus(label, True, len(found))
     except Exception as e:
         return [], SourceStatus(label, False, error=str(e)[:120])
@@ -368,6 +370,7 @@ def collect(now: datetime) -> tuple[list[Article], list[SourceStatus], list[Quot
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         rss_jobs = [pool.submit(fetch_rss, o, s, u, since) for o, s, u in config.RSS_FEEDS]
+        rss_jobs += [pool.submit(fetch_rss, o, s, u, since, True) for o, s, u in config.WORLD_FEEDS]
         search_jobs = [pool.submit(fetch_google, since), pool.submit(fetch_naver, since)]
         quotes_job = pool.submit(fetch_quotes)
 
