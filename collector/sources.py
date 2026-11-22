@@ -28,6 +28,9 @@ class Article:
     outlet: str
     published: datetime  # KST
     via: str          # "구글", "RSS", "네이버"
+    author: str = ""
+    lead: str = ""    # 기사 앞부분 몇 문장 (패널 표시용)
+    targeted: bool = False  # 시장 관련 검색어로 찾은 기사 (키워드 필터 생략)
 
 
 @dataclass
@@ -69,10 +72,24 @@ def clean_text(raw: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def first_sentence(text: str, limit: int = 160) -> str:
-    # "(서울=연합뉴스) 홍길동 기자 = " 같은 머리말 제거
+def strip_dateline(text: str) -> str:
+    """"(서울=연합뉴스) 홍길동 기자 = " 같은 머리말 제거."""
     text = re.sub(r"^\s*[\(\[][^)\]]{0,30}[\)\]]\s*([^=]{0,20}기자\s*=\s*)?", "", text)
-    text = re.sub(r"^[^=]{0,20}기자\s*=\s*", "", text)
+    return re.sub(r"^[^=]{0,20}기자\s*=\s*", "", text)
+
+
+def lead_text(text: str, limit: int = 420) -> str:
+    """패널에 보여줄 기사 앞부분 (몇 문장)."""
+    text = strip_dateline(text)
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind("다. "), cut.rfind("다."))
+    return cut[: end + 2] if end > limit * 0.5 else cut.rstrip() + "…"
+
+
+def first_sentence(text: str, limit: int = 160) -> str:
+    text = strip_dateline(text)
     m = re.search(r"(.+?(?:다|음|함|됨|요)\.)(\s|$)", text)
     sentence = m.group(1) if m else text
     return sentence if len(sentence) <= limit else sentence[: limit - 1] + "…"
@@ -131,12 +148,14 @@ def fetch_rss(outlet: str, section: str, url: str, since: datetime) -> tuple[lis
             published = parse_date(_tag(block, "pubDate", "dc:date"))
             title = clean_text(_tag(block, "title"))
             link = clean_text(_tag(block, "link"))
+            description = clean_text(_tag(block, "description"))
             if not (title and link and published) or published < since:
                 continue
             articles.append(Article(
                 title=title,
-                summary=first_sentence(clean_text(_tag(block, "description"))),
+                summary=first_sentence(description), lead=lead_text(description),
                 url=link, outlet=outlet, published=published, via="RSS",
+                author=clean_text(_tag(block, "author", "dc:creator")),
             ))
         return articles, SourceStatus(name, True, len(articles))
     except Exception as e:  # 소스 하나가 실패해도 전체는 계속
@@ -187,11 +206,7 @@ def run_queries(label: str, fetch_one, workers: int) -> tuple[list[Article], Sou
 # ---------------------------------------------------------------------------
 # 구글 뉴스 RSS 검색 (주력, 키 불필요)
 # ---------------------------------------------------------------------------
-def fetch_google_query(query: str, since: datetime) -> list[Article]:
-    days = max(1, -(-config.WINDOW_HOURS // 24))  # 올림
-    params = urllib.parse.urlencode({"q": f"{query} when:{days}d", "hl": "ko", "gl": "KR", "ceid": "KR:ko"})
-    text = decode(http_get(f"{config.GOOGLE_NEWS_URL}?{params}"))
-
+def parse_google_rss(text: str, since: datetime, targeted: bool) -> list[Article]:
     articles = []
     for block in re.findall(r"<item>.*?</item>", text, flags=re.S):
         published = parse_date(_tag(block, "pubDate"))
@@ -206,10 +221,26 @@ def fetch_google_query(query: str, since: datetime) -> list[Article]:
         while source_name and title.endswith(f" - {source_name}"):  # "제목 - 언론사" 꼬리 제거
             title = title[: -len(f" - {source_name}")]
         articles.append(Article(
-            title=title, summary="",  # 구글 RSS에는 본문 첫 문장이 없음 (같은 사건의 언론사 RSS 기사에서 채워짐)
+            title=title, summary="",  # 구글 RSS에는 본문이 없음 (같은 사건의 언론사 RSS 기사에서 채워짐)
             url=clean_text(_tag(block, "link")), outlet=outlet, published=published, via="구글",
+            targeted=targeted,
         ))
     return articles
+
+
+def fetch_google_query(query: str, since: datetime) -> list[Article]:
+    days = max(1, -(-config.WINDOW_HOURS // 24))  # 올림
+    params = urllib.parse.urlencode({"q": f"{query} when:{days}d", "hl": "ko", "gl": "KR", "ceid": "KR:ko"})
+    return parse_google_rss(decode(http_get(f"{config.GOOGLE_NEWS_URL}?{params}")), since, targeted=True)
+
+
+def fetch_google_topic(name: str, url: str, since: datetime) -> tuple[list[Article], SourceStatus]:
+    label = f"구글 뉴스 {name}"
+    try:
+        found = parse_google_rss(decode(http_get(url)), since, targeted=False)
+        return found, SourceStatus(label, True, len(found))
+    except Exception as e:
+        return [], SourceStatus(label, False, error=str(e)[:120])
 
 
 def fetch_google(since: datetime) -> tuple[list[Article], list[SourceStatus]]:
@@ -239,10 +270,11 @@ def fetch_naver_query(query: str, since: datetime, client_id: str, secret: str) 
             outlet = outlet_from_url(url)
             if published < since or outlet is None:
                 continue
+            description = clean_text(it.get("description", ""))
             articles.append(Article(
                 title=clean_text(it.get("title", "")),
-                summary=first_sentence(clean_text(it.get("description", ""))),
-                url=url, outlet=outlet, published=published, via="네이버",
+                summary=first_sentence(description), lead=lead_text(description),
+                url=url, outlet=outlet, published=published, via="네이버", targeted=True,
             ))
         if len(items) < 100 or (oldest and oldest < since):
             break  # 기간 밖으로 넘어가면 다음 페이지 불필요
@@ -321,6 +353,7 @@ def collect(now: datetime) -> tuple[list[Article], list[SourceStatus], list[Quot
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         rss_jobs = [pool.submit(fetch_rss, o, s, u, since) for o, s, u in config.RSS_FEEDS]
+        rss_jobs += [pool.submit(fetch_google_topic, n, u, since) for n, u in config.GOOGLE_TOPIC_FEEDS]
         search_jobs = [pool.submit(fetch_google, since), pool.submit(fetch_naver, since)]
         quotes_job = pool.submit(fetch_quotes)
 

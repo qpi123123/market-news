@@ -11,9 +11,14 @@ RSS_FEEDS = [
     # (출처명, 섹션, URL)
     ("연합뉴스", "마켓+", "https://www.yna.co.kr/rss/market.xml"),
     ("연합뉴스", "경제", "https://www.yna.co.kr/rss/economy.xml"),
+    ("연합뉴스", "전체", "https://www.yna.co.kr/rss/news.xml"),
+    ("연합뉴스", "산업", "https://www.yna.co.kr/rss/industry.xml"),
+    ("연합뉴스", "사회", "https://www.yna.co.kr/rss/society.xml"),
     ("연합인포맥스", "전체", "https://news.einfomax.co.kr/rss/allArticle.xml"),
     ("한국경제", "증권", "https://www.hankyung.com/feed/finance"),
     ("한국경제", "경제", "https://www.hankyung.com/feed/economy"),
+    ("한국경제", "IT", "https://www.hankyung.com/feed/it"),
+    ("한국경제", "사회", "https://www.hankyung.com/feed/society"),
     ("매일경제", "증권", "https://www.mk.co.kr/rss/50200011/"),  # 봇 차단 간헐적
     ("매일경제", "경제", "https://www.mk.co.kr/rss/30100041/"),
     ("뉴시스", "경제", "https://www.newsis.com/RSS/economy.xml"),
@@ -31,6 +36,17 @@ RSS_FEEDS = [
 # ---------------------------------------------------------------------------
 # 구글 뉴스 RSS 검색: 키 불필요. 검색어당 최대 약 100건. 비공식 사용이라 형식이 바뀔 수 있음.
 GOOGLE_NEWS_URL = "https://news.google.com/rss/search"
+
+# 구글 뉴스 주요 헤드라인·분야별 피드: 검색어로 못 잡는 국내 주요 뉴스까지 전부 수집
+_G = "?hl=ko&gl=KR&ceid=KR:ko"
+GOOGLE_TOPIC_FEEDS = [
+    ("주요 헤드라인", f"https://news.google.com/rss{_G}"),
+    ("경제", f"https://news.google.com/rss/headlines/section/topic/BUSINESS{_G}"),
+    ("과학·기술", f"https://news.google.com/rss/headlines/section/topic/TECHNOLOGY{_G}"),
+    ("사회", f"https://news.google.com/rss/headlines/section/topic/NATION{_G}"),
+    ("세계", f"https://news.google.com/rss/headlines/section/topic/WORLD{_G}"),
+]
+
 
 # 네이버 뉴스 검색 API (선택): NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 가 있을 때만 사용.
 #   신규 키는 네이버클라우드 'NAVER API HUB'에서 발급 (현재 한시적 무료).
@@ -58,12 +74,16 @@ SEARCH_QUERIES = {
                 "반도체 수출 규제"],
     "기업": ["잠정실적", "어닝 서프라이즈", "어닝 쇼크", "단일판매 공급계약", "대규모 수주",
            "유상증자 결정", "자사주 소각", "인수합병", "기술이전 계약", "임상 결과", "공모주 청약", "신규 상장"],
+    # 특정 사건이 아니라 '주가에 번질 수 있는 사회·산업 이슈' 유형으로 검색
+    "사회·산업 이슈": ["흥행 돌풍", "신작 흥행", "품귀 현상", "대규모 리콜", "개인정보 유출", "해킹 피해",
+                  "파업", "공장 화재", "박스오피스", "소비 트렌드", "부정행위 논란", "규제 논란"],
     "테마": ["HBM", "AI 반도체", "로봇주", "휴머노이드", "2차전지주", "바이오 임상", "원전 SMR",
            "방산 수출", "조선 수주", "전력기기", "우주항공", "양자컴퓨터", "비트코인", "스테이블코인",
            "엔터주", "게임주", "자동차 관세"],
 }
 
-# 검색 결과 중 아래 도메인만 남김 (None으로 바꾸면 모든 매체 허용 — 블로그성 매체도 섞임)
+# 언론사 화이트리스트: 구글·네이버 검색 결과 중 아래 도메인만 남김.
+# 언론사 RSS(위 RSS_FEEDS)와 이 목록에 있는 곳만 수집됨. 증권정보 업체·블로그형 매체는 넣지 않음.
 OUTLETS = {
     "yna.co.kr": "연합뉴스", "einfomax.co.kr": "연합인포맥스", "hankyung.com": "한국경제",
     "mk.co.kr": "매일경제", "sedaily.com": "서울경제", "edaily.co.kr": "이데일리",
@@ -75,10 +95,18 @@ OUTLETS = {
     "dt.co.kr": "디지털타임스", "ddaily.co.kr": "디지털데일리", "thelec.kr": "디일렉",
     "wowtv.co.kr": "한국경제TV", "biz.sbs.co.kr": "SBS Biz", "mbn.co.kr": "MBN", "ytn.co.kr": "YTN",
     "news.kbs.co.kr": "KBS", "imbc.com": "MBC", "news.sbs.co.kr": "SBS", "bizwatch.co.kr": "비즈니스워치",
-    "infostock.co.kr": "인포스탁", "seoul.co.kr": "서울신문", "kmib.co.kr": "국민일보",
+    "seoul.co.kr": "서울신문", "kmib.co.kr": "국민일보",
     "munhwa.com": "문화일보", "segye.com": "세계일보", "businesspost.co.kr": "비즈니스포스트",
     "korea.kr": "정책브리핑", "bok.or.kr": "한국은행",
 }
+
+# AI·로봇이 자동 작성한 기사 제외. 제목·첫 문장·기자명에 아래 표현이 있으면 버림.
+# 새 유형이 보이면 여기에 추가. (2026-11 확인: 매일경제 'MK시그널' 등 'AI 기자' 시리즈)
+AI_ARTICLE_MARKERS = [
+    "AI 기자", "AI기자", "AI 리포터", "AI리포터", "AI 앵커", "로봇기자", "로봇 기자", "로보뉴스",
+    "인공지능 기자", "AI가 작성", "AI로 작성", "AI가 쓴", "자동 생성된 기사", "자동생성 기사",
+    "MK시그널", "골든크로스 돌파종목",
+]
 
 # ---------------------------------------------------------------------------
 # 3) 시장 숫자 — Yahoo Finance 차트 API (비공식, 키 불필요)

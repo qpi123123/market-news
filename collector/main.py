@@ -37,14 +37,14 @@ def main() -> None:
     now = datetime.now(KST)
 
     articles, statuses, quotes = collect(now)
-    stories = process(articles, ROOT / "data" / "history.json", now)
-    page = render_page(stories, quotes, statuses, len(articles), now, config.WINDOW_HOURS)
+    stories, n_ai = process(articles, ROOT / "data" / "history.json", now)
+    page = render_page(stories, quotes, statuses, len(articles), n_ai, now, config.WINDOW_HOURS)
 
     out = ROOT / "docs" / "index.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
 
-    print(f"기사 {len(articles):,}건 → 사건 {len(stories):,}개 ({time.time() - started:.0f}초)")
+    print(f"기사 {len(articles):,}건 (AI 작성 {n_ai}건 제외) → 사건 {len(stories):,}개 ({time.time() - started:.0f}초)")
     for st in statuses:
         print(f"  {'OK ' if st.ok else 'ERR'} {st.name}: {st.count}건 {st.error}")
     print(f"저장: {out}")
