@@ -5,7 +5,9 @@ from __future__ import annotations
 import html
 import json
 import os
+import random
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,10 +59,18 @@ class Quote:
 # ---------------------------------------------------------------------------
 # 공통
 # ---------------------------------------------------------------------------
-def http_get(url: str, headers: dict | None = None, timeout: int = 15) -> bytes:
+def http_get(url: str, headers: dict | None = None, timeout: int = 15, retries: int = 3) -> bytes:
+    """GET. 429(요청 과다)·503(일시 차단)이면 점점 길게 쉬었다가 재시도."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 503) or attempt == retries:
+                raise
+            time.sleep(4 * (attempt + 1) + random.random() * 2)
+    raise RuntimeError("unreachable")
 
 
 def clean_text(raw: str) -> str:
@@ -244,9 +254,14 @@ def fetch_google_topic(name: str, url: str, since: datetime) -> tuple[list[Artic
 
 
 def fetch_google(since: datetime) -> tuple[list[Article], list[SourceStatus]]:
-    # 동시 요청을 많이 보내면 구글이 일시 차단(503)할 수 있어 3개로 제한
-    articles, status = run_queries("구글 뉴스 검색", lambda q: fetch_google_query(q, since), workers=3)
-    return articles, [status]
+    # 동시 요청을 많이 보내면 구글이 일시 차단(429·503)하므로 2개로 제한
+    articles, status = run_queries("구글 뉴스 검색", lambda q: fetch_google_query(q, since), workers=2)
+    statuses = [status]
+    for name, url in config.GOOGLE_TOPIC_FEEDS:  # 검색이 끝난 뒤 하나씩 (구글 요청이 몰리지 않게)
+        found, st = fetch_google_topic(name, url, since)
+        articles += found
+        statuses.append(st)
+    return articles, statuses
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +368,6 @@ def collect(now: datetime) -> tuple[list[Article], list[SourceStatus], list[Quot
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         rss_jobs = [pool.submit(fetch_rss, o, s, u, since) for o, s, u in config.RSS_FEEDS]
-        rss_jobs += [pool.submit(fetch_google_topic, n, u, since) for n, u in config.GOOGLE_TOPIC_FEEDS]
         search_jobs = [pool.submit(fetch_google, since), pool.submit(fetch_naver, since)]
         quotes_job = pool.submit(fetch_quotes)
 
