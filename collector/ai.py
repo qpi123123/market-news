@@ -31,26 +31,28 @@ SYSTEM = """너는 한국 주식시장 뉴스 분류기다. 각 뉴스 제목이
 - dir: 해당 업종 주가에 상승 압력이면 "+", 하락 압력이면 "-", 불분명하면 "0".
 - imp: 세계·국내 정세에서 이 뉴스의 중요도 0~3 (3=전쟁 발발·대형 테러·주요국 정권 교체·글로벌 시장 급변, 0=가십).
 - wcat: 해외 뉴스면 "경제", "분쟁·전쟁", "테러·안보", "정치", "외교" 중 하나, 국내 뉴스면 빈 문자열.
-설명 없이 JSON 하나만 출력: {"items":[{"id":"...","rel":1,"sector":"...","dir":"+","imp":2,"wcat":""}]}"""
+출력 형식: 뉴스 하나당 한 줄, 다른 말 없이 아래 6칸을 | 로 구분.
+id|rel|sector|dir|imp|wcat
+예) a1b2c3|1|게임|+|2|
+예) d4e5f6|0||0|0|"""
 
 
-def _parse(content: str) -> dict[str, dict]:
-    start, end = content.find("{"), content.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError(f"JSON 없음: {content[:150]!r}")
+def _parse(content: str, valid_ids: set[str]) -> dict[str, dict]:
+    """'id|rel|sector|dir|imp|wcat' 줄들 → 결과. 형식이 깨진 줄은 버림."""
     out = {}
-    for it in json.loads(content[start:end + 1]).get("items", []):
-        sid = str(it.get("id", ""))
-        if not sid:
+    for line in content.splitlines():
+        cells = [c.strip() for c in line.strip().strip("`").split("|")]
+        if len(cells) < 5 or cells[0] not in valid_ids:
             continue
+        sid, rel, sector, direction, imp = cells[:5]
+        wcat = cells[5] if len(cells) > 5 else ""
         try:
-            imp = max(0, min(3, int(it.get("imp", 0) or 0)))
-            rel = bool(int(it.get("rel", 0) or 0))
-        except (TypeError, ValueError):
+            rel_b = bool(int(rel))
+            imp_i = max(0, min(3, int(imp or 0)))
+        except ValueError:
             continue
-        out[sid] = {"rel": rel, "sector": str(it.get("sector", ""))[:20],
-                    "dir": it.get("dir") if it.get("dir") in ("+", "-", "0") else "0",
-                    "imp": imp, "wcat": str(it.get("wcat", ""))[:10]}
+        out[sid] = {"rel": rel_b, "sector": sector[:20], "dir": direction if direction in ("+", "-", "0") else "0",
+                    "imp": imp_i, "wcat": wcat[:10]}
     return out
 
 
@@ -69,7 +71,7 @@ def _call(key: str, model: str, batch: list[tuple[str, str]]) -> dict[str, dict]
         content = json.loads(raw)["choices"][0]["message"]["content"] or ""
     except Exception:
         raise ValueError(f"응답 형식 이상: {raw[:150]!r}")
-    return _parse(content)
+    return _parse(content, {sid for sid, _ in batch})
 
 
 def _apply(s: Story, r: dict) -> None:
@@ -102,7 +104,7 @@ def classify(stories: list[Story], ids: dict[int, str], cache_path: Path) -> Sou
                if sid not in cache]
     key = os.environ.get("GROQ_API_KEY", "")
     models = list(config.AI_MODELS)
-    done, error = 0, ""
+    done, error, bad_batches = 0, "", 0
     if pending and not key:
         error = "GROQ_API_KEY 없음 — 새 기사는 키워드 규칙 사용"
     elif pending:
@@ -121,11 +123,12 @@ def classify(stories: list[Story], ids: dict[int, str], cache_path: Path) -> Sou
                         continue
                     error = f"HTTP {e.code}{' 한도 초과' if e.code == 429 else ''} {detail}".strip()
                     break
-                except Exception as e:
-                    error = str(e)[:200]
-                    break
-            if results is None:
+                except Exception:            # 응답 형식 문제 → 이 묶음만 건너뜀
+                    results = {}
+            if results is None:              # 한도 초과·인증 오류 → 중단
                 break
+            if not results:
+                bad_batches += 1
             for sid, r in results.items():
                 if sid in by_sid:
                     _apply(by_sid[sid], r)
@@ -139,6 +142,8 @@ def classify(stories: list[Story], ids: dict[int, str], cache_path: Path) -> Sou
     note = f"저장된 결과 {reused}건 재사용 · 새로 {done}건 판별"
     if left > 0:
         note += f" · 미판별 {left}건(키워드 규칙, 다음 실행에서 이어서)"
+    if bad_batches:
+        note += f" · 응답 형식 오류로 건너뛴 묶음 {bad_batches}개"
     if error:
         note += f" · {error}"
     ok = not error or done > 0 or reused > 0 or not key   # 키 미설정은 실패가 아님

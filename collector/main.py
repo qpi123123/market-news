@@ -9,6 +9,7 @@
 - data/stocks.json   : 상장 종목 목록 캐시 (7일마다 갱신)
 - data/themes.json   : 날짜별 테마 건수 (테마 흐름)
 - data/ai_cache.json : AI 판별 결과 저장 (14일, 같은 사건은 다시 보내지 않음)
+- data/flows.json    : 투자자별 순매수 마지막 값 (주말·휴일에도 표시)
 - data/archive/      : 날짜별 상위 뉴스 기록 → docs/archive/*.html
 """
 
@@ -24,6 +25,7 @@ import config  # noqa: E402
 from ai import classify  # noqa: E402
 from archive import build_archive_pages, save_snapshot, update_theme_log  # noqa: E402
 from enrich import fill_leads  # noqa: E402
+from flows import collect_flows  # noqa: E402
 from process import process  # noqa: E402
 from render import render_page, story_id  # noqa: E402
 from sources import KST, SourceStatus, collect  # noqa: E402
@@ -55,6 +57,8 @@ def main() -> None:
     ids = {id(s): story_id(s) for s in stories}
     statuses.append(classify(stories, ids, ROOT / "data" / "ai_cache.json"))
     statuses.append(fill_leads(stories))
+    flows, flow_status = collect_flows(now, ROOT / "data" / "flows.json")
+    statuses.append(flow_status)
 
     # 날짜별 보관 (작은 JSON만 저장소에 남김) → 지난 날짜 페이지 생성
     theme_log = update_theme_log(ROOT / "data" / "themes.json", now, stories)
@@ -62,7 +66,7 @@ def main() -> None:
     archive_dates = build_archive_pages(ROOT / "data" / "archive", ROOT / "docs" / "archive")
 
     page = render_page(stories, quotes, statuses, len(articles), n_ai, now, config.WINDOW_HOURS, stock_list,
-                       theme_log, archive_dates)
+                       theme_log, archive_dates, flows)
     out = ROOT / "docs" / "index.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")

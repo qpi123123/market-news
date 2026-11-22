@@ -76,7 +76,37 @@ def change_html(q: Quote) -> str:
 # ---------------------------------------------------------------------------
 # 시장 지표 (접힘)
 # ---------------------------------------------------------------------------
-def render_market(quotes: list[Quote], now: datetime) -> str:
+def fmt_eok(v: float) -> str:
+    """억원 → '−1조 2,682억' / '+3,499억'."""
+    sign = "+" if v > 0 else "−" if v < 0 else ""
+    v = abs(round(v))
+    jo, eok = divmod(v, 10000)
+    return f"{sign}{jo}조 {eok:,}억" if jo else f"{sign}{eok:,}억"
+
+
+def render_flows(flows: dict) -> str:
+    """투자자별 순매수 카드 (마감시황 기사 기준)."""
+    if not flows:
+        return ('<div class="mcard"><h3>투자자별 순매수</h3>'
+                '<p class="note">아직 기록 없음 — 장 마감 기사가 나온 뒤 표시</p></div>')
+    rows, sources = [], []
+    for key, label in (("kospi", "코스피"), ("kosdaq", "코스닥")):
+        f = flows.get(key)
+        if not f:
+            continue
+        cells = "".join(
+            f'<span class="fv {"up" if f.get(n, 0) > 0 else "down" if f.get(n, 0) < 0 else ""}">'
+            f'<small>{n}</small>{fmt_eok(f[n]) if n in f else "–"}</span>'
+            for n in ("외국인", "기관", "개인"))
+        rows.append(f'<div class="fl-row"><span class="fl-m">{label}</span>{cells}</div>')
+        src = f'{f["date"][5:7]}/{f["date"][8:10]} {f.get("time", "")} {f["outlet"]}'
+        sources.append(f'<a href="{escape(safe_url(f["url"]))}" target="_blank" rel="noopener" '
+                       f'title="{escape(f.get("title", ""))}">{label}: {escape(src)}</a>')
+    return (f'<div class="mcard mflow"><h3>투자자별 순매수 <small>마감 기준</small></h3>{"".join(rows)}'
+            f'<p class="note fl-src">출처 · {" · ".join(sources)}<br>마감시황 기사 숫자. 매체·시점마다 조금씩 다를 수 있음</p></div>')
+
+
+def render_market(quotes: list[Quote], now: datetime, flows: dict | None = None) -> str:
     groups: dict[str, list[Quote]] = {}
     for q in quotes:
         groups.setdefault(q.group, []).append(q)
@@ -92,6 +122,7 @@ def render_market(quotes: list[Quote], now: datetime) -> str:
             rows.append(f'<div class="{cls}"><span>{escape(q.name)}</span><b class="mv">{fmt_number(q.price)}</b>'
                         f'{change_html(q)}<small>{as_of}</small></div>')
         cards.append(f'<div class="mcard"><h3>{escape(group)}</h3>{"".join(rows)}</div>')
+    cards.insert(1, render_flows(flows or {}))   # '국내' 지수 바로 다음
     return (f'<section id="market" hidden><div class="mgrid">{"".join(cards)}</div>'
             f'<p class="note">등락은 직전 거래일 종가 대비 · 오른쪽은 기준일(오늘이면 KST 시각) · '
             f'흐린 값은 4일 이상 갱신 안 됨 · 국고채·두바이유는 무료 소스 없음</p></section>')
@@ -290,7 +321,7 @@ def render_info(statuses: list[SourceStatus], n_articles: int, n_ai: int, storie
 def render_page(stories: list[Story], quotes: list[Quote], statuses: list[SourceStatus],
                 n_articles: int, n_ai: int, now: datetime, window_hours: int,
                 stock_list: list[dict] | None = None, theme_log: dict | None = None,
-                archive_dates: list[str] | None = None) -> str:
+                archive_dates: list[str] | None = None, flows: dict | None = None) -> str:
     stories = sorted(stories, key=lambda s: s.score, reverse=True)
     starred = {id(s) for s in [s for s in stories if s.stock_related][:STAR_N]}
     ids = {id(s): story_id(s) for s in stories}
@@ -346,7 +377,7 @@ def render_page(stories: list[Story], quotes: list[Quote], statuses: list[Source
   <div class="bar-row sub" id="chiprow"><div class="chips">{chips}</div><span id="shown" class="shown"></span></div>
 </header>
 
-{render_market(quotes, now)}
+{render_market(quotes, now, flows)}
 
 <div id="watchbox" class="watchbox" hidden>
   <div class="wb-in">
@@ -438,6 +469,14 @@ button,input,select{font:inherit;color:inherit;letter-spacing:inherit}
 .mq.missing{grid-template-columns:1fr auto}
 .mq.missing .mv{font-weight:400;font-size:12px;color:var(--faint)}
 .note{margin:8px 0 0;font-size:11.5px;color:var(--faint)}
+.mflow h3 small{font-weight:400;margin-left:4px}
+.fl-row{display:grid;grid-template-columns:44px repeat(3,1fr);gap:6px;align-items:baseline;padding:3px 0;font-size:13px;font-variant-numeric:tabular-nums}
+.fl-row+.fl-row{border-top:1px dashed var(--line)}
+.fl-m{font-weight:600}
+.fv{font-weight:700;text-align:right;white-space:nowrap}
+.fv small{display:block;font-size:10.5px;font-weight:500;color:var(--faint)}
+.fl-src a{color:var(--faint)}
+.fl-src a:hover{color:var(--accent)}
 
 /* 관심종목 설정 */
 .watchbox{border-bottom:1px solid var(--line);background:var(--soft);padding:12px 20px}
