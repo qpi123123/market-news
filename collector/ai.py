@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 from datetime import datetime, timedelta
@@ -23,6 +24,25 @@ BATCH = 25            # 요청 1회에 보내는 제목 수
 PAUSE = 20.0          # 요청 사이 간격(초) — 무료 '분당 토큰' 제한(약 6,000) 대비
 MAX_REQUESTS = 12     # 한 번 실행에 보낼 최대 요청 수 (나머지는 다음 실행에서)
 CACHE_DAYS = 14
+MAX_WAIT = 70.0       # 한도 초과 시 Groq가 알려준 대기 시간이 이 이하면 기다렸다 재시도
+MAX_RATE_RETRIES = 4  # 한 실행에서 한도 초과 재시도 최대 횟수
+
+
+def _retry_after(e: urllib.error.HTTPError, body: str) -> float | None:
+    """429 응답에서 대기 시간(초). 헤더 retry-after 또는 본문 'try again in 12.3s / 450ms / 1m2s'."""
+    header = e.headers.get("retry-after") if e.headers else None
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass
+    m = re.search(r"try again in ((?:\d+(?:\.\d+)?(?:ms|m|s))+)", body)
+    if not m:
+        return None
+    total = 0.0
+    for num, unit in re.findall(r"(\d+(?:\.\d+)?)(ms|m|s)", m.group(1)):
+        total += float(num) * {"ms": 0.001, "s": 1, "m": 60}[unit]
+    return total
 
 SYSTEM = """너는 한국 주식시장 뉴스 분류기다. 각 뉴스 제목이 국내 상장 주식(개별 종목, 업종, 코스피·코스닥 지수)의 가격이나 투자심리에 영향을 줄 수 있는지 판단한다.
 - 관련(rel=1): 기업 실적·수주·공시, 금리·환율·원자재, 정책·규제, 지정학, 해외 증시·빅테크, 그리고 사회·산업 이슈라도 특정 업종이나 기업 매출·비용·규제로 번질 수 있는 것(예: 대형 게임 흥행, AI 부정행위 논란에 따른 규제·보안 수요, 파업, 대형 사고, 소비 트렌드).
@@ -56,17 +76,19 @@ def _parse(content: str, valid_ids: set[str]) -> dict[str, dict]:
     return out
 
 
-def _call(key: str, model: str, batch: list[tuple[str, str]]) -> dict[str, dict]:
+def _call(key: str, model: str, batch: list[tuple[str, str]], low_reasoning: bool) -> dict[str, dict]:
     user = "\n".join(f"{sid}\t{title}" for sid, title in batch)
-    body = json.dumps({
+    payload = {
         "model": model,
         "messages": [{"role": "system", "content": SYSTEM},
                      {"role": "user", "content": f"아래 뉴스(id<TAB>제목)를 분류:\n{user}"}],
         "temperature": 0,
-        "max_tokens": 4000,
-    }).encode()
+        "max_tokens": 2000,
+    }
+    if low_reasoning:   # gpt-oss는 답 전에 '생각' 토큰을 씀 → 낮춰서 분당 토큰 한도 절약
+        payload["reasoning_effort"] = "low"
     raw = http_get(ENDPOINT, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                   data=body, timeout=90, retries=2)
+                   data=json.dumps(payload).encode(), timeout=90, retries=0)
     try:
         content = json.loads(raw)["choices"][0]["message"]["content"] or ""
     except Exception:
@@ -104,7 +126,8 @@ def classify(stories: list[Story], ids: dict[int, str], cache_path: Path) -> Sou
                if sid not in cache]
     key = os.environ.get("GROQ_API_KEY", "")
     models = list(config.AI_MODELS)
-    done, error, bad_batches = 0, "", 0
+    done, error, bad_batches, waits = 0, "", 0, 0
+    low_reasoning = True
     if pending and not key:
         error = "GROQ_API_KEY 없음 — 새 기사는 키워드 규칙 사용"
     elif pending:
@@ -115,13 +138,27 @@ def classify(stories: list[Story], ids: dict[int, str], cache_path: Path) -> Sou
             results = None
             while results is None:
                 try:
-                    results = _call(key, models[0], batch)
+                    results = _call(key, models[0], batch, low_reasoning)
                 except urllib.error.HTTPError as e:
-                    detail = e.read()[:150].decode("utf-8", "replace") if e.fp else ""
+                    # 오류 본문에는 계정 정보가 들어 있을 수 있어 페이지에는 요약만 남김
+                    body = e.read()[:600].decode("utf-8", "replace") if e.fp else ""
+                    if e.code == 400 and low_reasoning:      # 'reasoning_effort'를 모르는 모델 → 빼고 재시도
+                        low_reasoning = False
+                        continue
                     if e.code in (400, 404) and len(models) > 1:   # 모델 문제 → 다음 모델로
                         models.pop(0)
                         continue
-                    error = f"HTTP {e.code}{' 한도 초과' if e.code == 429 else ''} {detail}".strip()
+                    if e.code == 429:
+                        wait = _retry_after(e, body)
+                        if wait is not None and wait <= MAX_WAIT and waits < MAX_RATE_RETRIES:
+                            waits += 1
+                            time.sleep(wait + 1)
+                            continue
+                        error = "사용량 한도 초과 — 남은 기사는 다음 실행에서 이어서"
+                    elif e.code in (401, 403):
+                        error = "인증 실패 — GROQ_API_KEY 확인 필요"
+                    else:
+                        error = f"Groq 오류 HTTP {e.code}"
                     break
                 except Exception:            # 응답 형식 문제 → 이 묶음만 건너뜀
                     results = {}
@@ -144,6 +181,8 @@ def classify(stories: list[Story], ids: dict[int, str], cache_path: Path) -> Sou
         note += f" · 미판별 {left}건(키워드 규칙, 다음 실행에서 이어서)"
     if bad_batches:
         note += f" · 응답 형식 오류로 건너뛴 묶음 {bad_batches}개"
+    if waits:
+        note += f" · 한도 대기 {waits}회"
     if error:
         note += f" · {error}"
     ok = not error or done > 0 or reused > 0 or not key   # 키 미설정은 실패가 아님
