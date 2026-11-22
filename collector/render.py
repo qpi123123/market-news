@@ -175,6 +175,91 @@ def panel_data(s: Story) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 테마 흐름 (날짜별 기록 기반)
+# ---------------------------------------------------------------------------
+# 순차 파랑 (dataviz 기준 팔레트 blue 100→600). 0건은 빈 칸.
+HEAT = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#5598e7", "#3987e5", "#256abf", "#184f95"]
+
+
+def render_flow(log: dict, dates: list, now: datetime) -> str:
+    from datetime import timedelta
+    today = now.date()
+    days = [today - timedelta(days=i) for i in range(13, -1, -1)]          # 최근 14일
+    week = [d.isoformat() for d in days[7:]]                                # 최근 7일
+    prev = [d.isoformat() for d in days[:7]]                                # 그 전 7일
+
+    def total(theme, keys):
+        return sum(log.get(k, {}).get(theme, 0) for k in keys)
+
+    themes = sorted({t for k in (week + prev) for t in log.get(k, {})},
+                    key=lambda t: (-total(t, week), -total(t, prev), t))
+    n_days = len(log)
+    has_prev = any(k in log for k in prev)
+
+    # 1) 주간 변화
+    if has_prev:
+        diffs = [(t, total(t, week) - total(t, prev), total(t, week), total(t, prev)) for t in themes]
+        ups = sorted([d for d in diffs if d[1] > 0], key=lambda d: -d[1])[:6]
+        downs = sorted([d for d in diffs if d[1] < 0], key=lambda d: d[1])[:6]
+        scale = max([abs(d[1]) for d in ups + downs] or [1])
+
+        def bars(rows, cls):
+            if not rows:
+                return '<p class="fl-none">해당 없음</p>'
+            return "".join(
+                f'<div class="fb" title="{escape(t)}: 이번 주 {w}건 · 지난주 {p}건">'
+                f'<span class="fb-n">{escape(t)}</span><span class="fb-track"><span class="fb-bar {cls}" '
+                f'style="width:{max(4, abs(d) / scale * 100):.0f}%"></span></span>'
+                f'<span class="fb-v">{"+" if d > 0 else "−"}{abs(d)}</span><span class="fb-sub">{p}→{w}</span></div>'
+                for t, d, w, p in rows)
+        weekly = (f'<div class="fl-cols"><div><h3>뜨는 테마 <small>이번 주 − 지난주 건수</small></h3>{bars(ups, "up")}</div>'
+                  f'<div><h3>지는 테마</h3>{bars(downs, "down")}</div></div>')
+    else:
+        top = [(t, total(t, week)) for t in themes[:10]]
+        scale = max([v for _, v in top] or [1])
+        weekly = ('<p class="fl-note">지난주 기록이 쌓이면(기록 8일째부터) 이번 주와 지난주를 비교한 뜨는·지는 테마가 나옴. '
+                  '지금은 이번 주 누적 순위.</p>' + "".join(
+                      f'<div class="fb" title="{escape(t)}: 이번 주 {v}건"><span class="fb-n">{escape(t)}</span>'
+                      f'<span class="fb-track"><span class="fb-bar seq" style="width:{max(4, v / scale * 100):.0f}%"></span></span>'
+                      f'<span class="fb-v">{v}</span><span class="fb-sub"></span></div>' for t, v in top))
+
+    # 2) 히트맵 (테마 × 최근 14일)
+    vmax = max([log.get(d.isoformat(), {}).get(t, 0) for d in days for t in themes] or [1]) or 1
+    head = "".join(
+        f'<th class="{"today" if d == today else ""}{" we" if d.weekday() >= 5 else ""}">'
+        f'{d.month}/{d.day}<small>{WEEKDAYS[d.weekday()]}</small></th>' for d in days)
+    body = []
+    for t in themes:
+        cells = []
+        for d in days:
+            k = d.isoformat()
+            if k not in log:
+                cells.append('<td class="nd" title="기록 없음"></td>')
+                continue
+            v = log[k].get(t, 0)
+            if not v:
+                cells.append(f'<td class="z" title="{escape(t)} · {d.month}/{d.day} · 0건">·</td>')
+                continue
+            step = min(len(HEAT) - 1, max(0, round(v / vmax * (len(HEAT) - 1))))
+            ink = "#fff" if step >= 4 else "#191f28"
+            cells.append(f'<td style="background:{HEAT[step]};color:{ink}" '
+                         f'title="{escape(t)} · {d.month}/{d.day} · 주식 관련 뉴스 {v}건">{v}</td>')
+        body.append(f'<tr><th class="rt">{escape(t)}</th>{"".join(cells)}</tr>')
+    swatches = "".join(f'<i style="background:{c}"></i>' for c in HEAT)
+    heat = (f'<div class="hm-wrap"><table class="hm"><thead><tr><th></th>{head}</tr></thead>'
+            f'<tbody>{"".join(body) or "<tr><td>기록 없음</td></tr>"}</tbody></table></div>'
+            f'<div class="hm-legend"><span>적음</span>{swatches}<span>많음</span>'
+            f'<span class="hm-k">· 0건</span><span class="hm-k"><i class="nd"></i> 기록 없음</span></div>')
+
+    archive = "".join(f'<a href="archive/{d}.html">{d[5:7]}/{d[8:10]}</a>' for d in dates[:60]) or "아직 없음"
+    return (f'<section id="flow" hidden><p class="fl-note">테마별 주식 관련 뉴스 건수 기록 · {n_days}일째 '
+            f'(하루 마지막 수집 기준). 테마는 키워드 사전 기준. 칸에 마우스를 올리면 건수 표시.</p>'
+            f'<div class="fl-card"><h2>이번 주 테마 변화</h2>{weekly}</div>'
+            f'<div class="fl-card"><h2>최근 14일 테마 흐름</h2>{heat}</div>'
+            f'<div class="fl-card"><h2>지난 날짜 페이지</h2><div class="arch">{archive}</div></div></section>')
+
+
+# ---------------------------------------------------------------------------
 # 수집 정보 (맨 아래, 접힘)
 # ---------------------------------------------------------------------------
 def render_info(statuses: list[SourceStatus], n_articles: int, n_ai: int, stories: list[Story],
@@ -204,7 +289,8 @@ def render_info(statuses: list[SourceStatus], n_articles: int, n_ai: int, storie
 # ---------------------------------------------------------------------------
 def render_page(stories: list[Story], quotes: list[Quote], statuses: list[SourceStatus],
                 n_articles: int, n_ai: int, now: datetime, window_hours: int,
-                stock_list: list[dict] | None = None) -> str:
+                stock_list: list[dict] | None = None, theme_log: dict | None = None,
+                archive_dates: list[str] | None = None) -> str:
     stories = sorted(stories, key=lambda s: s.score, reverse=True)
     starred = {id(s) for s in [s for s in stories if s.stock_related][:STAR_N]}
     ids = {id(s): story_id(s) for s in stories}
@@ -246,6 +332,7 @@ def render_page(stories: list[Story], quotes: list[Quote], statuses: list[Source
       <button data-scope="dom" type="button">국내 전체<span>{n_dom:,}</span></button>
       <button data-scope="world" type="button">해외 핵심<span>{len(world)}</span></button>
       <button data-scope="watch" type="button">관심<span id="watchcount">0</span></button>
+      <button data-scope="flow" type="button">테마 흐름</button>
     </nav>
     <div class="ctl">
       <input id="q" type="search" placeholder="종목·키워드·언론사 검색">
@@ -277,6 +364,7 @@ def render_page(stories: list[Story], quotes: list[Quote], statuses: list[Source
       <p class="wnote">여러 언론사가 다룬 해외 뉴스 중 분쟁·테러·정치·외교·경제 비중과 AI 중요도로 고른 상위 {len(world)}건. 요약은 언론사 기사 앞부분.</p>
       <div class="wgrid">{world_cards}</div>
     </div>
+    {render_flow(theme_log or {}, archive_dates or [], now)}
     <p class="empty" id="empty" hidden>조건에 맞는 뉴스 없음</p>
     {render_info(statuses, n_articles, n_ai, stories, now, window_hours)}
   </main>
@@ -401,6 +489,43 @@ main{min-width:0}
 .wcard h3{margin:0;font-size:16px;line-height:1.45;font-weight:700}
 .wl{margin:6px 0 0;color:var(--sub);font-size:13.5px;line-height:1.6;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+/* 테마 흐름 */
+#flow{padding:16px 20px 8px;max-width:1280px}
+.fl-note{margin:0 0 12px;color:var(--faint);font-size:12.5px}
+.fl-card{border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:14px}
+.fl-card h2{font-size:15px;margin:0 0 12px}
+.fl-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:8px 28px}
+.fl-cols h3{font-size:13px;margin:0 0 6px;color:var(--sub)}
+.fl-cols h3 small{color:var(--faint);font-weight:400;margin-left:6px}
+.fl-none{color:var(--faint);font-size:13px;margin:4px 0}
+.fb{display:grid;grid-template-columns:88px minmax(0,1fr) 40px 64px;align-items:center;gap:8px;padding:4px 0;font-size:13px}
+.fb-n{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fb-track{height:10px;background:var(--soft2);border-radius:4px;overflow:hidden}
+.fb-bar{display:block;height:100%;border-radius:0 4px 4px 0}
+.fb-bar.up{background:var(--up)}.fb-bar.down{background:var(--down)}.fb-bar.seq{background:#3987e5}
+.fb-v{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.fb-sub{color:var(--faint);font-size:11.5px;font-variant-numeric:tabular-nums}
+.hm-wrap{overflow-x:auto}
+.hm{border-collapse:separate;border-spacing:2px;font-variant-numeric:tabular-nums}
+.hm th{font-size:11.5px;color:var(--faint);font-weight:600;padding:2px 4px;white-space:nowrap}
+.hm thead th{text-align:center;line-height:1.2}
+.hm thead th small{display:block;font-weight:400}
+.hm thead th.today{color:var(--accent)}
+.hm thead th.we{color:#b0b8c1}
+.hm th.rt{text-align:right;color:var(--sub);font-size:12.5px;padding-right:8px}
+.hm td{width:40px;min-width:40px;height:28px;text-align:center;font-size:12px;font-weight:600;border-radius:4px;cursor:default}
+.hm td:hover{outline:2px solid var(--text);outline-offset:-1px}
+.hm td.z{background:var(--soft);color:#c4cad1;font-weight:400}
+.hm td.nd{background:repeating-linear-gradient(45deg,var(--soft),var(--soft) 3px,#fff 3px,#fff 6px)}
+.hm-legend{display:flex;align-items:center;gap:3px;margin-top:10px;font-size:11.5px;color:var(--faint)}
+.hm-legend i{display:inline-block;width:18px;height:10px;border-radius:2px}
+.hm-legend span{margin:0 4px}
+.hm-legend .hm-k{margin-left:12px}
+.hm-legend i.nd{background:repeating-linear-gradient(45deg,var(--soft),var(--soft) 3px,#fff 3px,#fff 6px);border:1px solid var(--line)}
+.arch{display:flex;flex-wrap:wrap;gap:6px}
+.arch a{border:1px solid var(--line);border-radius:8px;padding:3px 10px;font-size:12.5px;color:var(--sub);text-decoration:none;font-variant-numeric:tabular-nums}
+.arch a:hover{border-color:var(--accent);color:var(--accent)}
 
 /* 오른쪽 패널 */
 #panel{position:sticky;top:var(--bar-h,92px);height:calc(100vh - var(--bar-h,92px));overflow-y:auto;
@@ -636,11 +761,16 @@ JS = r"""
   }
   function render() {
     const words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const isWorld = scope === 'world';
-    list.hidden = isWorld; worldBox.hidden = !isWorld;
-    $('chiprow').hidden = isWorld;
-    theme.disabled = isWorld; sort.disabled = isWorld;
+    const isWorld = scope === 'world', isFlow = scope === 'flow';
+    list.hidden = isWorld || isFlow; worldBox.hidden = !isWorld; $('flow').hidden = !isFlow;
+    $('chiprow').hidden = isWorld || isFlow;
+    theme.disabled = isWorld || isFlow; sort.disabled = isWorld || isFlow; q.disabled = isFlow;
 
+    if (isFlow) {
+      visible = [];
+      $('shown').textContent = ''; $('empty').hidden = true; newBtn.hidden = true;
+      setBarH(); return;
+    }
     if (isWorld) {
       visible = cards.filter(c => words.every(w => c.dataset.search.includes(w)));
       cards.forEach(c => c.hidden = !visible.includes(c));

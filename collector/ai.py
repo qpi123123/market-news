@@ -1,4 +1,7 @@
-"""AI 주식 관련 판별 — GitHub Models 무료 사용량 (GitHub Actions의 GITHUB_TOKEN으로 호출).
+"""AI 주식 관련 판별 — 현재 꺼짐 (config.AI_ENABLED).
+
+GitHub Models가 2026-07-30 서비스 종료되어 이 엔드포인트는 더 이상 동작하지 않음.
+다른 제공자(예: Gemini)로 바꿀 때 _call()만 교체하면 됨.
 
 - 기사를 쓰거나 요약하지 않음. 제목을 보고 '주식 관련 여부 / 영향 업종 / 방향'만 분류.
 - 토큰이 없거나(로컬 실행), 한도 초과·오류가 나면 키워드 규칙 결과를 그대로 사용.
@@ -66,7 +69,7 @@ def classify(stories: list[Story], ids: dict[int, str]) -> SourceStatus:
     name = f"AI 판별 (GitHub Models {config.AI_MODEL})"
     token = os.environ.get("GITHUB_TOKEN", "")
     if not config.AI_ENABLED:
-        return SourceStatus(name, True, error="꺼짐 — 키워드 규칙 사용")
+        return SourceStatus("AI 판별", True, error="꺼짐 (GitHub Models 서비스 종료) — 키워드 규칙 사용")
     if not token:
         return SourceStatus(name, True, error="토큰 없음(로컬 실행) — 키워드 규칙 사용")
 
