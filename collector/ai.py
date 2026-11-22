@@ -39,7 +39,8 @@ def _call(token: str, model: str, batch: list[tuple[str, str]]) -> dict[str, dic
         "response_format": {"type": "json_object"},
     }).encode()
     raw = http_get(ENDPOINT, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                                      "Accept": "application/json"}, data=body, timeout=60, retries=1)
+                                      "Accept": "application/vnd.github+json",
+                                      "X-GitHub-Api-Version": "2022-11-28"}, data=body, timeout=60, retries=1)
     try:
         content = json.loads(raw)["choices"][0]["message"]["content"] or ""
     except Exception:
